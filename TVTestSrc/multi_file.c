@@ -469,6 +469,8 @@ static int try_next(char *path)
 
 	int need_more;
 
+	if (path == NULL) return -1;
+
 	// detect suffix
 	p = path;
 	suffix = NULL;

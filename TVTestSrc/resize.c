@@ -19,11 +19,14 @@ RESIZE_PARAMETER *create_force_resize_parameter(SEQUENCE_HEADER *seq, int width,
 void release_resize_parameter(RESIZE_PARAMETER *prm);
 
 /* local */
-static void setup_interpolation_parameter(int source_length, int result_length, COMPONENT_RESIZE_PARAMETER *out);
-static void setup_decimation_parameter(int source_length, int result_length, COMPONENT_RESIZE_PARAMETER *out);
+static void free_resize_parameter(COMPONENT_RESIZE_PARAMETER* prm);
+static int alloc_resize_parameter(COMPONENT_RESIZE_PARAMETER* out, int length, int tap);
+
+static int setup_interpolation_parameter(int source_length, int result_length, COMPONENT_RESIZE_PARAMETER *out);
+static int setup_decimation_parameter(int source_length, int result_length, COMPONENT_RESIZE_PARAMETER *out);
 static double lanczos3_weight(double phase);
 
-static void setup_crop_parameter(int source_length, COMPONENT_RESIZE_PARAMETER *r);
+static int setup_crop_parameter(int source_length, COMPONENT_RESIZE_PARAMETER *r);
 
 static void component_resize(unsigned char *in, unsigned char *out, COMPONENT_RESIZE_PARAMETER *prm);
 
@@ -299,156 +302,188 @@ RESIZE_PARAMETER *create_force_resize_parameter(SEQUENCE_HEADER *seq, int width,
 	}
 	
 	if(r->l.width < src_width[0]){
-		setup_decimation_parameter(src_width[0], r->l.width, &(r->l));
-		setup_decimation_parameter(src_width[1], r->c.width, &(r->c));
+		if (!setup_decimation_parameter(src_width[0], r->l.width, &(r->l)) || !setup_decimation_parameter(src_width[1], r->c.width, &(r->c)))
+		{
+			free(r);
+			r = NULL;
+		}
 	}else if(r->l.width == src_width[0]){
-		setup_crop_parameter(src_width[0], &(r->l));
-		setup_crop_parameter(src_width[1], &(r->c));
+		if (!setup_crop_parameter(src_width[0], &(r->l)) || !setup_crop_parameter(src_width[1], &(r->c)))
+		{
+			free(r);
+			r = NULL;
+		}
 	}else{
-		setup_interpolation_parameter(src_width[0], r->l.width, &(r->l));
-		setup_interpolation_parameter(src_width[1], r->c.width, &(r->c));
+		if( !setup_interpolation_parameter(src_width[0], r->l.width, &(r->l)) || !setup_interpolation_parameter(src_width[1], r->c.width, &(r->c)))
+		{
+			free(r);
+			r = NULL;
+		}
 	}
 
 	return r;
 }
 
 /*-----------------------------------------------------------------*/
-void release_resize_parameter(RESIZE_PARAMETER *prm)
+void release_resize_parameter(RESIZE_PARAMETER* prm)
 {
-	int i;
-	
-	if(prm == NULL){
-		return;
-	}
+	if(prm == NULL) return;
 
-	for(i=0;i<prm->l.length;i++){
-		free(prm->l.weight[i]);
-		free(prm->l.index[i]);
-	}
-
-	free(prm->l.index);
-	free(prm->l.weight);
-
-	for(i=0;i<prm->c.length;i++){
-		free(prm->c.weight[i]);
-		free(prm->c.index[i]);
-	}
-
-	free(prm->c.index);
-	free(prm->c.weight);
+	free_resize_parameter(&(prm->l));
+	free_resize_parameter(&(prm->c));
 
 	free(prm);
 }
 
 /*-----------------------------------------------------------------*/
-static void setup_interpolation_parameter(int source_length, int result_length, COMPONENT_RESIZE_PARAMETER *out)
+static void free_resize_parameter(COMPONENT_RESIZE_PARAMETER* prm)
 {
-	int i,j,n;
+	if (prm == NULL) return;
+
+	if (prm->weight)
+	{
+		for (int i = 0; i < prm->length; i++) free(prm->weight[i]);
+		free(prm->weight);
+		prm->weight = NULL;
+	}
+
+	if (prm->index)
+	{
+		for (int i = 0; i < prm->length; i++) free(prm->index[i]);
+		free(prm->index);
+		prm->index = NULL;
+	}
+}
+/*-----------------------------------------------------------------*/
+static int alloc_resize_parameter(COMPONENT_RESIZE_PARAMETER* out, int length, int tap)
+{
+	if (out != NULL)
+	{
+		int i, j;
+		
+		out->weight = NULL;
+		out->index = NULL;
+		if (length > 0 && tap > 0)
+		{
+			out->length = length;
+			out->tap = tap;
+
+			if ((out->weight = (int**)malloc(sizeof(int*) * out->length)) != NULL)
+			{
+				if ((out->index = (int**)malloc(sizeof(int*) * out->length)) != NULL)
+				{
+					for (i = 0; i < length; i++) {
+						if ((out->index[i] = (int*)malloc(sizeof(int*) * tap)) == NULL) break;
+					}
+					if (i == length)
+					{
+						for (i = 0; i < length; i++) {
+							if ((out->weight[i] = (int*)malloc(sizeof(int*) * tap)) == NULL) break;
+						}
+						if (i == length)return 1;//Success
+
+						for (j = 0; j < i; j++)free(out->weight[j]);
+						i = length;
+					}
+					for (j = 0; j < i; j++) free(out->index[j]);
+					free(out->index);
+					out->index = NULL;
+				}
+				free(out->weight);
+				out->weight = NULL;
+			}
+		}
+	}
+	return 0;
+}
+
+/*-----------------------------------------------------------------*/
+static int setup_interpolation_parameter(int source_length, int result_length, COMPONENT_RESIZE_PARAMETER *out)
+{
+	int i, j, n;
 	double *work;
 	double  sum;
 	double  pos;
 
-	if (out == NULL) return;
-	if ((work = (double*)malloc(sizeof(double) * out->tap)) != NULL)
+	if (!alloc_resize_parameter(out, result_length, 6)) return 0;
+
+	if ((work = (double*)malloc(sizeof(double) * 6)) == NULL)
 	{
-		out->length = result_length;
-		if ((out->index = (int**)malloc(sizeof(int*) * out->length)) != NULL)
-		{
-			if ((out->weight = (int**)malloc(sizeof(int*) * out->length)) != NULL)
-			{
-				out->tap = 6;
+		free_resize_parameter(out);
+		return 0;
+	}
 
-				for (i = 0; i < result_length; i++) {
-					if ((out->index[i] = (int*)malloc(sizeof(int) * out->tap)) == NULL) break;
-				}
-				if (i == result_length)
-				{
-					for (i = 0; i < result_length; i++) {
-						if ((out->weight[i] = (int*)malloc(sizeof(int) * out->tap)) == NULL) break;
-					}
-					if (i == result_length)
-					{
-						__asm {emms};
+	__asm {emms};
 
-						for (i = 0; i < result_length; i++) {
-							pos = (i + 0.5) * source_length;
-							pos /= result_length;
-							n = (int)floor(pos - 2.5);
-							pos = (n + 0.5 - pos);
-							sum = 0;
-							for (j = 0; j < out->tap; j++) {
-								if (n < 0) {
-									out->index[i][j] = 0;
-								}
-								else if (n >= source_length) {
-									out->index[i][j] = source_length - 1;
-								}
-								else {
-									out->index[i][j] = n;
-								}
-								work[j] = lanczos3_weight(pos);
-								sum += work[j];
-								pos += 1;
-								n += 1;
-							}
-
-							for (j = 0; j < out->tap; j++) {
-								out->weight[i][j] = (int)((work[j] / sum) * (1 << 16));
-							}
-							return;//Success
-						}
-					}
-					for (j = 0; j < i; j++)free(out->weight[j]);
-					i = result_length;
-				}
-				for (j = 0; j < i; j++) free(out->index[j]);
+	for (i = 0; i < result_length; i++) {
+		pos = (i + 0.5) * source_length;
+		pos /= result_length;
+		n = (int)floor(pos - 2.5);
+		pos = (n + 0.5 - pos);
+		sum = 0;
+		for (j = 0; j < out->tap; j++) {
+			if (n < 0) {
+				out->index[i][j] = 0;
 			}
-			free(out->weight);
+			else if (n >= source_length) {
+				out->index[i][j] = source_length - 1;
+			}
+			else {
+				out->index[i][j] = n;
+			}
+			work[j] = lanczos3_weight(pos);
+			sum += work[j];
+			pos += 1;
+			n += 1;
 		}
-		free(out->index);
+
+		for (j = 0; j < out->tap; j++) {
+			out->weight[i][j] = (int)((work[j] / sum) * (1 << 16));
+		}
 	}
 	free(work);
+
+	return 1;
 }
 
 /*-----------------------------------------------------------------*/
-static void setup_decimation_parameter(int source_length, int result_length, COMPONENT_RESIZE_PARAMETER *out)
+static int setup_decimation_parameter(int source_length, int result_length, COMPONENT_RESIZE_PARAMETER *out)
 {
-	int i,j,n;
+	int i,j,n, tap;
 	double *work;
 	double  sum;
 	double  pos, phase;
 
-	out->length = result_length;
-	out->weight = (int **)malloc(sizeof(int *)*out->length);
-	out->index = (int **)malloc(sizeof(int *)*out->length);
-	
 	__asm {emms};
 
-	out->tap = (6*(source_length)+(result_length-1)) / result_length;
-
+	tap = (6*(source_length)+(result_length-1)) / result_length;
 	if((source_length % result_length) == 0){
-		out->tap -= 1;
+		tap -= 1;
 	}
 
-	for(i=0;i<result_length;i++){
-		out->weight[i] = (int *)malloc(sizeof(int)*out->tap);
-		out->index[i] = (int *)malloc(sizeof(int)*out->tap);
-	}
-	work = (double *)malloc(sizeof(double)*out->tap);
+	if (!alloc_resize_parameter(out, result_length, tap)) return 0;
 
-	for(i=0;i<result_length;i++){
-		pos = (i-3+0.5)*source_length/result_length + 0.5;
+	if ((work = (double*)malloc(sizeof(double) * tap)) == NULL)
+	{
+		free_resize_parameter(out);
+		return 0;
+	}
+
+	for (i = 0; i < result_length; i++) {
+		pos = (i - 3 + 0.5) * source_length / result_length + 0.5;
 		n = (int)floor(pos);
 		sum = 0;
-		for(j=0;j<out->tap;j++){
-			phase = (n+0.5)*result_length;
+		for (j = 0; j < out->tap; j++) {
+			phase = (n + 0.5) * result_length;
 			phase /= source_length;
-			phase -= (i+0.5);
-			if(n < 0){
+			phase -= (i + 0.5);
+			if (n < 0) {
 				out->index[i][j] = 0;
-			}else if(n >= source_length){
-				out->index[i][j] = source_length-1;
-			}else{
+			}
+			else if (n >= source_length) {
+				out->index[i][j] = source_length - 1;
+			}
+			else {
 				out->index[i][j] = n;
 			}
 			work[j] = lanczos3_weight(phase);
@@ -456,12 +491,13 @@ static void setup_decimation_parameter(int source_length, int result_length, COM
 			n += 1;
 		}
 
-		for(j=0;j<out->tap;j++){
-			out->weight[i][j] = (int)((work[j] / sum) * (1<<16));
+		for (j = 0; j < out->tap; j++) {
+			out->weight[i][j] = (int)((work[j] / sum) * (1 << 16));
 		}
 	}
-
 	free(work);
+
+	return 1;
 }
 
 /*-----------------------------------------------------------------*/
@@ -483,26 +519,9 @@ static double lanczos3_weight(double phase)
 }
 
 /*-----------------------------------------------------------------*/
-static void setup_crop_parameter(int result_length, COMPONENT_RESIZE_PARAMETER *out)
+static int setup_crop_parameter(int result_length, COMPONENT_RESIZE_PARAMETER *out)
 {
-	int i;
-
-	out->length = result_length;
-	out->index = (int **)malloc(sizeof(int)*out->length);
-	out->weight = (int **)malloc(sizeof(int *)*out->length);
-	out->tap = 1;
-
-	for(i=0;i<result_length;i++){
-		out->weight[i] = (int *)malloc(sizeof(int));
-		out->index[i] = (int *)malloc(sizeof(int));
-	}
-
-	for(i=0;i<result_length;i++){
-		out->index[i][0] = i;
-		out->weight[i][0] = 1<<16;
-	}
-
-	return;
+	return alloc_resize_parameter(out, result_length, 1);
 }
 
 /*-----------------------------------------------------------------*/

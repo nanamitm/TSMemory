@@ -16,7 +16,7 @@ int get_idct_type();
 int get_simd_mode();
 int get_field_mode();
 int get_resize_mode();
-int get_file_check_limit();
+//int get_file_check_limit();
 int get_color_matrix();
 int get_gl_mode();
 int get_file_mode();

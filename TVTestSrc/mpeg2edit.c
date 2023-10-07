@@ -644,7 +644,9 @@ static int check_ts(BITSTREAM *in)
 	int o,p,d;
 	int count[376];
 	int max, total;
-	unsigned char buffer[460224];
+	unsigned char *buffer;
+
+	if ((buffer = (unsigned char*)malloc(sizeof(unsigned char)*460224)) == NULL) return 0;
 
 	n = bs_read(in, buffer, sizeof(buffer));
 	bs_seek(in, SEEK_SET, 0);
@@ -682,6 +684,8 @@ static int check_ts(BITSTREAM *in)
 		}
 	}
 
+	free(buffer);
+	
 	if(max > total/2){
 		return 1;
 	}
@@ -2075,6 +2079,8 @@ static LIST_ELEMENT *ps_read_pes_packet(BITSTREAM *in)
 
 	const int max_packet_length = 65542;
 
+	unsigned char* temp;
+
 	code = bs_read_bits(in, 32);
 	if( ((code & 0xffffff00) != 0x00000100) || ((code & 0x000000ff) < 0xbc) ){
 		return NULL;
@@ -2092,6 +2098,8 @@ static LIST_ELEMENT *ps_read_pes_packet(BITSTREAM *in)
 			current->length += n;
 		}
 
+		if (current->length < 6) return NULL;
+
 		packet_length = (current->data[4] << 8) + current->data[5];
 		packet_length += 6; /* packet_prefix(3) + stream_id(1) + data_length(2) */
 
@@ -2102,7 +2110,11 @@ static LIST_ELEMENT *ps_read_pes_packet(BITSTREAM *in)
 
 		code = bs_read_bits(in, 32);
 
-		current->data = (unsigned char *)realloc(current->data, current->length);
+		if ((temp = (unsigned char*)realloc(current->data, current->length)) == NULL)//再割り当て失敗時、元のメモリーは維持されるためポインターをNULLで上書き出来ない
+		{
+			return NULL;
+		}
+		else current->data = temp;
 		
 		if( ((code & 0xffffff00) == 0x00000100) && ((code & 0x000000ff) > 0xbb) ){
 			current = new_list_element(current, max_packet_length);
@@ -2166,17 +2178,18 @@ static PS_PACK_LIST_ELEMENT *ps_add_pack_list(PS_PACK_LIST_ELEMENT *pos, PS_PACK
 {
 	PS_PACK_LIST_ELEMENT *r;
 
-	r = (PS_PACK_LIST_ELEMENT *)calloc(1, sizeof(PS_PACK_LIST_ELEMENT));
+	if ((r = (PS_PACK_LIST_ELEMENT*)calloc(1, sizeof(PS_PACK_LIST_ELEMENT))) != NULL)
+	{
+		r->data = data;
 
-	r->data = data;
-	
-	r->prev = pos;
+		r->prev = pos;
 
-	if( pos != NULL ){
-		r->next = pos->next;
-		pos->next = r;
+		if (pos != NULL) {
+			r->next = pos->next;
+			pos->next = r;
+		}
+
 	}
-
 	return r;
 }
 
@@ -3282,12 +3295,16 @@ static void ps_trim_head_audio_packet(int fd, int stream_id, __int64 offset)
 	int n,max,length;
 	int to;
 	LIST_ELEMENT pes;
-	unsigned char buffer[65542];
+	unsigned char *buffer;
+	const size_t buffer_size= sizeof(unsigned char) * 65542;
 	unsigned char *p,*last;
+
+
+	if( (buffer = (unsigned char *)malloc(buffer_size)) ==  NULL) return;
 	
 	_lseeki64(fd, offset, SEEK_SET);
 
-	n = _read(fd, buffer, sizeof(buffer));
+	n = _read(fd, buffer, buffer_size);
 	
 	/*
 	   memo
@@ -3302,6 +3319,7 @@ static void ps_trim_head_audio_packet(int fd, int stream_id, __int64 offset)
 
 	if(buffer[3] != stream_id){
 		/* bug? */
+		free(buffer);
 		return;
 	}
 
@@ -3335,6 +3353,7 @@ static void ps_trim_head_audio_packet(int fd, int stream_id, __int64 offset)
 		       
 	if(p == NULL){
 		/* give up */
+		free(buffer);
 		return;
 	}
 
@@ -3342,6 +3361,7 @@ static void ps_trim_head_audio_packet(int fd, int stream_id, __int64 offset)
 	to = p - buffer;
 	if(n == to){
 		/* nothing to do */
+		free(buffer);
 		return;
 	}
 
@@ -3371,6 +3391,8 @@ static void ps_trim_head_audio_packet(int fd, int stream_id, __int64 offset)
 	_lseeki64(fd, offset, SEEK_SET);
 	_write(fd, buffer, max);
 
+	free(buffer);
+
 }
 
 static void ps_trim_tail_audio_packet(int fd, int stream_id, __int64 offset)
@@ -3378,16 +3400,20 @@ static void ps_trim_tail_audio_packet(int fd, int stream_id, __int64 offset)
 	int i;
 	int n,max,length;
 	int to;
-	unsigned char buffer[65542];
+	unsigned char *buffer;
+	const size_t buffer_size = sizeof(unsigned char) * 65542;
 	unsigned char *p,*last;
 	LIST_ELEMENT pes;
+
+	if ((buffer = (unsigned char*)malloc(buffer_size)) == NULL) return;
 	
 	_lseeki64(fd, offset, SEEK_SET);
 
-	n = _read(fd, buffer, sizeof(buffer));
+	n = _read(fd, buffer, buffer_size);
 	
 	if(buffer[3] != stream_id){
 		/* bug? */
+		free(buffer);
 		return;
 	}
 	
@@ -3423,11 +3449,13 @@ static void ps_trim_tail_audio_packet(int fd, int stream_id, __int64 offset)
 
 	if(to == 0){
 		/* give up */
+		free(buffer);
 		return;
 	}
 
 	if(p==last){
 		/* nothing to do */
+		free(buffer);
 		return;
 	}
 
@@ -3454,6 +3482,8 @@ static void ps_trim_tail_audio_packet(int fd, int stream_id, __int64 offset)
 
 	_lseeki64(fd, offset, SEEK_SET);
 	_write(fd, buffer, max);
+	
+	free(buffer);
 }
 
 static unsigned char *as_find_sync(unsigned char *buf, int size)
