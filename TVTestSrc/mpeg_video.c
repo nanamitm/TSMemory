@@ -22,6 +22,7 @@
 
 #define MPEG_VIDEO_C
 #include "mpeg_video.h"
+#include <xkeycheck.h>
 
 /* grobal */
 MPEG_VIDEO *open_mpeg_video(char *path);
@@ -117,7 +118,13 @@ MPEG_VIDEO *open_mpeg_video(char *path)
 	limit = (__int64)(out+1);
 	limit += 16;
 	limit &= (-16);
-	out->dec_prm = (DECODE_PICTURE_PARAMETER *)limit;
+
+#if( SIZE_MAX == 0xffffffff)
+	out->dec_prm = (DECODE_PICTURE_PARAMETER*)(__int32)limit;// 32bit pointer
+#else
+	out->dec_prm = (DECODE_PICTURE_PARAMETER*)limit;// other
+#endif
+
 	memset(out->dec_prm, 0, sizeof(DECODE_PICTURE_PARAMETER));
 	
 	code = 0;

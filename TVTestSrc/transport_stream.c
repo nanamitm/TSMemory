@@ -138,12 +138,14 @@ int ts_open(const char *filename, int stream_type)
 		if(!select_stream(ts, offset)){ /* failed to find stream */
 			continue;
 		}
-		j = search_same_pid(pid_candidate, n, ts->pid);
+		
+		if ((j = search_same_pid(pid_candidate, n, ts->pid)) < 0)// 同じpidが見つからない（search_same_pid仕様変更）
+		{
+			j = n++;// 最後に要素を追加し検索範囲を拡大する
+		}
+
 		pid_candidate[j].pid = ts->pid;
 		pid_candidate[j].count += 1;
-		if (j >= n) {
-			n += 1;
-		}
 	}
 
 	ts->pid = 0;
@@ -813,13 +815,12 @@ static int extract_program_map_table(unsigned char *buffer, unsigned char *pid_t
 
 static int search_same_pid(PID_CANDIDATE *pc, int count, int pid)
 {
-	int i;
+	static int i;
+
 	for(i=0;i<count;i++){
-		if (pc[i].pid == pid) {
-			return i;
-		}
+		if (pc[i].pid == pid) return i;
 	}
-	return i;
+	return -1;// 見つからない時にcountではなく-1を返す実装に変更
 }
 
 static int add_section_data(PES_PACKET *dst, unsigned char *data, int size, TS_HEADER *hdr)
